@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <sys/socket.h>
 
+/* -1: fail; 0: success*/
 int send_all(int sockfd, const uint8_t *buffer, size_t length) {
     size_t total_sent = 0;
 
@@ -19,14 +20,17 @@ int send_all(int sockfd, const uint8_t *buffer, size_t length) {
     return 0;
 }
 
+/* -1: fail; 0: success; 1: closed by peer*/
 int recv_all(int sockfd, uint8_t *buffer, size_t length) {
     size_t total_received = 0;
 
     while(total_received < length) {
         ssize_t bytes_received = recv(sockfd, buffer + total_received, length - total_received, 0);
 
-        if (bytes_received <= 0) {
+        if (bytes_received < 0) {
             return -1;
+        } else if (bytes_received == 0) {
+            return 1;
         }
 
         total_received += bytes_received;

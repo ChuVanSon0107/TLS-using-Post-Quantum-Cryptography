@@ -71,8 +71,12 @@ int main() {
     printf("[CLIENT] Connected to server\n");
 
     /* Receive public key */
-    if (recv_all(sockfd, public_key, kem->length_public_key) == -1) {
+    int received_bytes = recv_all(sockfd, public_key, kem->length_public_key);
+    if (received_bytes == -1) {
         fprintf(stderr, "[ERROR] Failed to receive public key\n");
+        goto end;
+    } else if (received_bytes == 1) {
+        fprintf(stderr, "[CLIENT] Connection closed\n");
         goto end;
     }
 
@@ -127,7 +131,9 @@ end:
 
 void cleanup_heap(uint8_t *shared_secret, uint8_t *public_key, uint8_t *ciphertext, OQS_KEM *kem) {
 	if (kem != NULL) {
-		OQS_MEM_secure_free(shared_secret, kem->length_shared_secret);
+        if (shared_secret != NULL) {
+            OQS_MEM_secure_free(shared_secret, kem->length_shared_secret);
+        }
 	}
 	OQS_MEM_insecure_free(public_key);
 	OQS_MEM_insecure_free(ciphertext);

@@ -116,8 +116,12 @@ int main() {
     print_hex(public_key, 32);
 
     /* Receive ciphertext */
-    if (recv_all(connfd, ciphertext, kem->length_ciphertext) == -1) {
+    int received_bytes = recv_all(connfd, ciphertext, kem->length_ciphertext);
+    if (received_bytes == -1) {
         fprintf(stderr, "[ERROR] Failed to receive ciphertext\n");
+        goto end;
+    } else if (received_bytes == 1) {
+        fprintf(stderr, "[SERVER] Connection closed\n");
         goto end;
     }
 
@@ -160,13 +164,18 @@ end:
     /* Free */
     cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
 
-    return EXIT_SUCCESS;
+    return ret;
 }
 
 void cleanup_heap(uint8_t *public_key, uint8_t *secret_key, uint8_t *shared_secret, uint8_t *ciphertext, OQS_KEM *kem) {
 	if (kem != NULL) {
-		OQS_MEM_secure_free(secret_key, kem->length_secret_key);
-		OQS_MEM_secure_free(shared_secret, kem->length_shared_secret);
+        if (secret_key != NULL) {
+            OQS_MEM_secure_free(secret_key, kem->length_secret_key);
+        }
+
+        if (shared_secret != NULL) {
+            OQS_MEM_secure_free(shared_secret, kem->length_shared_secret);
+        }
 	}
 	OQS_MEM_insecure_free(public_key);
 	OQS_MEM_insecure_free(ciphertext);
