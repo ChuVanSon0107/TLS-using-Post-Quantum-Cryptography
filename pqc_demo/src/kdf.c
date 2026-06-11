@@ -7,9 +7,7 @@
 
 static unsigned char hkdf_salt[] = "ML-KEM-768 AES-256-GCM session key";
 
-static unsigned char hkdf_info[] = {
-    0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9
-};
+static unsigned char hkdf_info[] = "ML-KEM-768 AES-256-GCM session key";
 
 
 int derive_aes256_key_hkdf(const uint8_t *shared_secret, size_t shared_secret_len, uint8_t *aes_key, size_t aes_key_len) {

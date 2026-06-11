@@ -6,7 +6,8 @@
 #include <arpa/inet.h>
 #include <oqs/oqs.h>
 
-#include "include/common.h"
+#include "common.h"
+#include "aes_gcm.h"
 #include "kdf.h"
 
 #define SERVER_IP "127.0.0.1"
@@ -114,6 +115,54 @@ int main() {
     printf("AES Key: \n");
     print_hex(aes_key, sizeof(aes_key));
 
+
+    /* AES Encryption and Decryption Demo */
+    const char *message = "Hello Secure PQC!";
+    uint8_t iv[AES_GCM_IV_LEN];
+    uint8_t tag[AES_GCM_TAG_LEN];
+    uint8_t ciptext[1024];
+    OQS_randombytes(iv, sizeof(iv));
+
+    // Encrypt message
+    int ciptext_len = aes_gcm_encrypt((const uint8_t *)message, strlen(message), aes_key, iv, ciptext, tag);
+    if (ciptext_len < 0) {
+        fprintf(stderr, "[ERROR] Encryption failed\n");
+        goto end;
+    }
+
+    printf("[OK] Encrypted message: \n");
+    printf("IV: \n");
+    print_hex(iv, sizeof(iv));
+    printf("TAG: \n");
+    print_hex(tag, sizeof(tag));
+    printf("Ciphertext: \n");
+    print_hex(ciptext, ciptext_len);
+
+    // Send IV
+    if (send_all(sockfd, iv, sizeof(iv)) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send IV\n");
+        goto end;
+    }
+
+    // send TAG
+    if (send_all(sockfd, tag, sizeof(tag)) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send TAG\n");
+        goto end;
+    }
+
+    // send length
+    uint32_t net_len = htonl(ciptext_len);
+    if (send_all(sockfd, (uint8_t *)&net_len, sizeof(net_len)) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send length of ciphertext\n");
+        goto end;
+    }
+
+    // send ciphertext
+    if (send_all(sockfd, ciptext, ciptext_len) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send ciphertext\n");
+        goto end;  
+    }
+
     ret = EXIT_SUCCESS;
     printf("[CLIENT] Connection closed\n");
 
@@ -123,7 +172,7 @@ end:
         close(sockfd);
     }
     
-    /* Free  */
+    /* Free */
     cleanup_heap(shared_secret, public_key, ciphertext, kem);
 
     return ret;
