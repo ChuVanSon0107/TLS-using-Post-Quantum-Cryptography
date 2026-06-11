@@ -4,10 +4,10 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
-
 #include <oqs/oqs.h>
 
 #include "common.h"
+#include "kdf.h"
 
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 4096
@@ -16,7 +16,8 @@ void cleanup_heap(uint8_t *public_key, uint8_t *secret_key, uint8_t *shared_secr
 
 int main() {
     /* TCP Socket */
-    int listenfd, connfd;
+    int listenfd = -1, connfd = -1;
+    int ret = EXIT_FAILURE;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
     char buffer[BUFFER_SIZE];
@@ -50,15 +51,13 @@ int main() {
 
     if (public_key == NULL || secret_key == NULL || shared_secret == NULL || ciphertext == NULL) {
         fprintf(stderr, "[ERROR] Memory allocation failed\n");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     /* Generate keypair */
     if (OQS_KEM_keypair(kem, public_key, secret_key) != OQS_SUCCESS) {
         fprintf(stderr, "[ERROR] Keypair generation failed\n");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("[OK] ML-KEM keypair generated\n");
@@ -67,16 +66,13 @@ int main() {
     listenfd = socket(AF_INET, SOCK_STREAM, 0);
     if (listenfd < 0) {
         perror("socket");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     int opt = 1;
     if (setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("setsockopt");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     /* memset */
@@ -89,17 +85,13 @@ int main() {
 
     if (bind(listenfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         perror("bind");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     /* Start listening */
     if (listen(listenfd, 5) < 0) {
         perror("listen");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("[SERVER] Waiting for client...\n");
@@ -108,9 +100,7 @@ int main() {
     connfd = accept(listenfd, (struct sockaddr *)&client_addr, &client_len);
     if (connfd < 0) {
         perror("accept");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("[SERVER] Client connected\n");
@@ -118,10 +108,7 @@ int main() {
     /* Send public key */
     if (send_all(connfd, public_key, kem->length_public_key) == -1) {
         fprintf(stderr, "[ERROR] Failed to send public key\n");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(connfd);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("[SERVER] Public key sent (%zu bytes)\n", kem->length_public_key);
@@ -131,10 +118,7 @@ int main() {
     /* Receive ciphertext */
     if (recv_all(connfd, ciphertext, kem->length_ciphertext) == -1) {
         fprintf(stderr, "[ERROR] Failed to receive ciphertext\n");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(connfd);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("[SERVER] Ciphertext received (%zu bytes)\n", kem->length_ciphertext);
@@ -142,26 +126,41 @@ int main() {
     /* Decapsulation => shared_secret */
     if (OQS_KEM_decaps(kem, shared_secret, ciphertext, secret_key) != OQS_SUCCESS) {
         fprintf(stderr, "[ERROR] OQS_KEM_decaps failed\n");
-        cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
-        close(connfd);
-        close(listenfd);
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("[OK] Decapsulation completed\n");
 
     printf("[SERVER] Shared secret: \n");
     print_hex(shared_secret, kem->length_shared_secret);
-    
+
+    /* Generate session key (AES Key) using HKDF_SHA256 */
+    uint8_t aes_key[32];
+    if (derive_aes256_key_hkdf(shared_secret, kem->length_shared_secret, aes_key, sizeof(aes_key)) != 0) {
+        fprintf(stderr, "HKDF_SHA256 failed\n");
+        goto end;
+    }
+
+    printf("AES Key: \n");
+    print_hex(aes_key, sizeof(aes_key));
+
+    ret = EXIT_SUCCESS;
+    printf("[SERVER] Connection closed\n");
+
+end:
     /* Close socket */
-    close(connfd);
-    close(listenfd);
+    if (connfd != -1) {
+        close(connfd);
+    }
+    
+    if (listenfd != -1) {
+        close(listenfd);
+    }
 
     /* Free */
     cleanup_heap(public_key, secret_key, shared_secret, ciphertext, kem);
 
-    printf("[SERVER] Connection closed\n");
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 void cleanup_heap(uint8_t *public_key, uint8_t *secret_key, uint8_t *shared_secret, uint8_t *ciphertext, OQS_KEM *kem) {
