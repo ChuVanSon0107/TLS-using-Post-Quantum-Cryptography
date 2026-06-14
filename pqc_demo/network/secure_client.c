@@ -16,7 +16,7 @@
 #define PUBLIC_KEY_FILE "keys/server_mldsa_public.key"
 #define SECRET_KEY_FILE "keys/server_mldsa_secret.key"
 
-void cleanup_mlkem(uint8_t *shared_secret, uint8_t *kem_public_key, uint8_t *ciphertext, OQS_KEM *kem);
+void cleanup_mlkem(uint8_t *kem_public_key, uint8_t *kem_secret_key, uint8_t *shared_secret, uint8_t *ciphertext, OQS_KEM *kem);
 void cleanup_mldsa(uint8_t *sig_public_key, uint8_t *signature, OQS_SIG *sig);
 
 int main() {
@@ -24,6 +24,10 @@ int main() {
     int sockfd = -1;
     int ret = EXIT_FAILURE;
     struct sockaddr_in server_addr;
+    int received_bytes;
+    int signature_length;
+    int ciphertext_length;
+    uint32_t network_bytes; // network bytes
 
     /* ML-DSA */
     OQS_SIG *sig = NULL;
@@ -33,8 +37,9 @@ int main() {
     /* ML-KEM */
     OQS_KEM *kem = NULL;
     uint8_t *kem_public_key = NULL;
-    uint8_t *ciphertext = NULL;
+    uint8_t *kem_secret_key = NULL;
     uint8_t *shared_secret = NULL;
+    uint8_t *ciphertext = NULL;
 
     /* Initialize ML-DSA-65 */
     sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
@@ -62,25 +67,40 @@ int main() {
         goto end;
     }
 
-    /* Initialize ML-KEM-768 */
+   /* Initialize ML-KEM */
     kem = OQS_KEM_new(OQS_KEM_alg_ml_kem_768);
     if (kem == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize ML-KEM\n");
         return EXIT_FAILURE;
     }
 
-    /* Allocate public key buffer */
+    printf("ML-KEM: %s\n", kem->method_name);
+    printf("Public Key Size: %zu\n", kem->length_public_key);
+    printf("Secret Key Size: %zu\n", kem->length_secret_key);
+    printf("Ciphertext Size: %zu\n", kem->length_ciphertext);
+    printf("Shared Secret: %zu\n", kem->length_shared_secret);
+
+    /* Allocate memory */
     kem_public_key = OQS_MEM_malloc(kem->length_public_key);
-    ciphertext = OQS_MEM_malloc(kem->length_ciphertext);
+    kem_secret_key = OQS_MEM_malloc(kem->length_secret_key);
     shared_secret = OQS_MEM_malloc(kem->length_shared_secret);
-    if (kem_public_key == NULL || ciphertext == NULL || shared_secret == NULL) {
+    ciphertext = OQS_MEM_malloc(kem->length_ciphertext);
+
+    if (kem_public_key == NULL || kem_secret_key == NULL || shared_secret == NULL || ciphertext == NULL) {
         fprintf(stderr, "[ERROR] Memory allocation failed\n");
         goto end;
     }
 
+    /* Generate keypair */
+    if (OQS_KEM_keypair(kem, kem_public_key, kem_secret_key) != OQS_SUCCESS) {
+        fprintf(stderr, "[ERROR] Keypair generation failed\n");
+        goto end;
+    }
+
+    printf("[OK] ML-KEM keypair generated\n");
+
     /* Socket creation */
     sockfd = socket(AF_INET, SOCK_STREAM, 0);
-
     if (sockfd < 0) {
         perror("socket");
         goto end;
@@ -92,13 +112,12 @@ int main() {
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
-
     if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
         perror("inet_pton");
         goto end;
     }
 
-    /* Connect to server */
+    /* 0. Connect to server */
     if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("connect");
         goto end;
@@ -106,84 +125,80 @@ int main() {
 
     printf("[CLIENT] Connected to server\n");
 
-    /* Receive public key and signature */
-    int received_bytes, sig_len, pk_len;
-    uint32_t net_len;
+    /* 1. Send Client Hello */
+    if (send_all(sockfd, kem_public_key, kem->length_public_key) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send Client Hello");
+        goto end;
+    }
 
-    
-    // receive public key length
-    received_bytes = recv_all(sockfd, (uint8_t *)&net_len, sizeof(net_len));
+    printf("[CLIENT] Sent Client Hello\n");
+
+    /* 2. Receive Server Hello */
+    /* Receive Ciphertext length */
+    received_bytes = recv_all(sockfd, (uint8_t *)&network_bytes, sizeof(network_bytes));
     if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive Public key length\n");
+        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
         goto end;
     } else if (received_bytes == 1) {
         fprintf(stderr, "[SERVER] Connection closed\n");
         goto end;
     }
 
-    pk_len = ntohl(net_len);
-    if (pk_len != kem->length_public_key) {
-        fprintf(stderr, "[ERROR] Invalid Public key length\n");
+    ciphertext_length = ntohl(network_bytes);
+    if (ciphertext_length != kem->length_ciphertext) {
+        fprintf(stderr, "[ERROR] Invalid Ciphertext length\n");
         goto end;
     }
 
-    // receive public key
-    received_bytes = recv_all(sockfd, kem_public_key, kem->length_public_key);
+    /* Receive Ciphertext */
+    received_bytes = recv_all(sockfd, ciphertext, kem->length_ciphertext);
     if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive public key\n");
+        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
         goto end;
     } else if (received_bytes == 1) {
         fprintf(stderr, "[CLIENT] Connection closed\n");
         goto end;
     }
 
-    // receive signature length
-    received_bytes = recv_all(sockfd, (uint8_t *)&net_len, sizeof(net_len));
+   /* Receive Signature length */
+    received_bytes = recv_all(sockfd, (uint8_t *)&network_bytes, sizeof(network_bytes));
     if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive Signature length\n");
+        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
         goto end;
     } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
+        fprintf(stderr, "[CLIENT] Connection closed\n");
         goto end;
     }
 
-    sig_len = ntohl(net_len);
+    signature_length = ntohl(network_bytes);
 
-    // receive signature
+    /* Receive Signature */
     received_bytes = recv_all(sockfd, signature, sig->length_signature);
     if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive Signature\n");
+        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
         goto end;
     } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
+        fprintf(stderr, "[CLIENT] Connection closed\n");
         goto end;
     }
 
-    printf("[CLIENT] Public key received\n");
+    printf("[CLIENT] Received Server Hello\n");
 
     /* Verify signature */
-    if (OQS_SIG_verify(sig, kem_public_key, pk_len, signature, sig_len, sig_public_key) != OQS_SUCCESS) {
+    if (OQS_SIG_verify(sig, ciphertext, ciphertext_length, signature, signature_length, sig_public_key) != OQS_SUCCESS) {
         fprintf(stderr, "[CLIENT] Signature verification failed\n");
         goto end;
     }   
 
     printf("[OK] Signature verified\n");
 
-    /* Encapsulation => ciphertext and shared_secret */
-    if (OQS_KEM_encaps(kem, ciphertext, shared_secret, kem_public_key) != OQS_SUCCESS) {
-        fprintf(stderr, "[ERROR] OQS_KEM_encaps failed!\n");
+    /* Decapsulation => shared_secret */
+    if (OQS_KEM_decaps(kem, shared_secret, ciphertext, kem_secret_key) != OQS_SUCCESS) {
+        fprintf(stderr, "[ERROR] OQS_KEM_decaps failed\n");
         goto end;
     }
 
-    printf("[OK] Encapsulation completed\n");
-
-    /* Send ciphertext to client */
-    if (send_all(sockfd, ciphertext, kem->length_ciphertext) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send ciphertext\n");
-        goto end;
-    }
-
-    printf("[CLIENT] Ciphertext sent (%zu bytes)\n", kem->length_ciphertext);
+    printf("[OK] Decapsulation completed\n");
 
     /* Generate session key (AES Key) using HKDF_SHA256 */
     uint8_t aes_key[32];
@@ -196,7 +211,7 @@ int main() {
     print_hex(aes_key, sizeof(aes_key));
 
 
-    /* AES Encryption and Decryption Demo */
+    /* 3. AES Encryption and Decryption Demo */
     const char *message = "Hello Secure PQC!";
     uint8_t iv[AES_GCM_IV_LEN];
     uint8_t tag[AES_GCM_TAG_LEN];
@@ -211,11 +226,11 @@ int main() {
     }
 
     printf("[OK] Encrypted message: \n");
-    printf("IV: \n");
+    printf("IV: ");
     print_hex(iv, sizeof(iv));
-    printf("TAG: \n");
+    printf("TAG: ");
     print_hex(tag, sizeof(tag));
-    printf("Ciphertext: \n");
+    printf("Ciphertext: ");
     print_hex(ciptext, ciptext_len);
 
     // Send IV
@@ -231,8 +246,8 @@ int main() {
     }
 
     // send length
-    net_len = htonl(ciptext_len);
-    if (send_all(sockfd, (uint8_t *)&net_len, sizeof(net_len)) == -1) {
+    network_bytes = htonl(ciptext_len);
+    if (send_all(sockfd, (uint8_t *)&network_bytes, sizeof(network_bytes)) == -1) {
         fprintf(stderr, "[ERROR] Failed to send length of ciphertext\n");
         goto end;
     }
@@ -242,6 +257,8 @@ int main() {
         fprintf(stderr, "[ERROR] Failed to send ciphertext\n");
         goto end;  
     }
+
+    printf("[CLIENT] Sent Application Data to Server\n");
 
     ret = EXIT_SUCCESS;
     printf("[CLIENT] Connection closed\n");
@@ -253,14 +270,18 @@ end:
     }
     
     /* Free */
-    cleanup_mlkem(shared_secret, kem_public_key, ciphertext, kem);
+        cleanup_mlkem(kem_public_key, kem_secret_key, shared_secret, ciphertext, kem);
     cleanup_mldsa(sig_public_key,  signature, sig);
 
     return ret;
 }
 
-void cleanup_mlkem(uint8_t *shared_secret, uint8_t *kem_public_key, uint8_t *ciphertext, OQS_KEM *kem) {
+void cleanup_mlkem(uint8_t *kem_public_key, uint8_t *kem_secret_key, uint8_t *shared_secret, uint8_t *ciphertext, OQS_KEM *kem) {
 	if (kem != NULL) {
+        if (kem_secret_key != NULL) {
+            OQS_MEM_secure_free(kem_secret_key, kem->length_secret_key);
+        }
+
         if (shared_secret != NULL) {
             OQS_MEM_secure_free(shared_secret, kem->length_shared_secret);
         }
