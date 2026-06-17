@@ -19,7 +19,7 @@
 #define SECRET_KEY_FILE "keys/server_mldsa_secret.key"
 
 void cleanup_mlkem(uint8_t *shared_secret, uint8_t *kem_public_key, uint8_t *ciphertext, OQS_KEM *kem);
-void cleanup_mldsa(uint8_t *sig_secret_key, uint8_t *signature, OQS_SIG *sig);
+void cleanup_mldsa(uint8_t *sig_secret_key, uint8_t *sig_public_key, uint8_t *signature, OQS_SIG *sig);
 
 int main() {
     /* TCP Socket */
@@ -31,6 +31,7 @@ int main() {
     /* ML-DSA */
     OQS_SIG *sig = NULL;
     uint8_t *sig_secret_key = NULL;
+    uint8_t *sig_public_key = NULL;
     uint8_t *signature = NULL;
     size_t signature_len;
 
@@ -54,8 +55,9 @@ int main() {
     
     /* Allocate memory */
     sig_secret_key = OQS_MEM_malloc(sig->length_secret_key);
+    sig_public_key = OQS_MEM_malloc(sig->length_public_key);
     signature = OQS_MEM_malloc(sig->length_signature);
-    if (sig_secret_key == NULL || signature == NULL) {
+    if (sig_secret_key == NULL || sig_public_key == NULL || signature == NULL) {
         fprintf(stderr, "[ERROR] Memory allocation failed\n");
         goto end;
     }
@@ -63,6 +65,12 @@ int main() {
     // Load secret key
     if (load_file(SECRET_KEY_FILE, sig_secret_key, sig->length_secret_key) != 0) {
         fprintf(stderr, "[ERROR] Cannot load ML-DSA secret key\n");
+        goto end;
+    }
+
+    // Load public key
+    if (load_file(PUBLIC_KEY_FILE, sig_public_key, sig->length_public_key) != 0) {
+        fprintf(stderr, "[ERROR] Cannot load ML-DSA public key\n");
         goto end;
     }
 
@@ -149,12 +157,12 @@ int main() {
         goto end;
     }
 
+    printf("[SERVER] Received Client Hello\n");
+
     if (body_len != kem->length_public_key) {
         fprintf(stderr, "[ERROR] Invalid Client Hello length\n");
         goto end;
     }
-
-    printf("[SERVER] Received Client Hello\n");
 
     /* Update transcript after receiving ClientHello */
     if (encode_handshake_msg(TLS_MSG_CLIENT_HELLO, kem_public_key, body_len, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
@@ -182,6 +190,8 @@ int main() {
         goto end;
     }
 
+    printf("[SERVER] Sent Server Hello\n");
+
     /* Update transcript after sending ServerHello */
     if (encode_handshake_msg(TLS_MSG_SERVER_HELLO, ciphertext, kem->length_ciphertext, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
         fprintf(stderr, "[ERROR] Failed to encoded ServerHello for transcript\n");
@@ -193,7 +203,27 @@ int main() {
         goto end;
     }
 
-    /* 3. Send CertificateVerify */
+    /* 3. Send Certificate */
+    if (send_handshake_msg(connfd, TLS_MSG_CERTIFICATE, sig_public_key, sig->length_public_key) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send Certificate\n");
+        goto end;
+    }
+
+    printf("[SERVER] Sent Certificate\n");
+
+    /* Update transcript after sending Certificate */
+    if (encode_handshake_msg(TLS_MSG_CERTIFICATE, sig_public_key, sig->length_public_key, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode Certificate for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
+    /* 4. Send CertificateVerify */
     /* Get hash for transcript to sign */
     if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
         fprintf(stderr, "[ERROR] Failed to get transcript hash\n");
@@ -206,14 +236,16 @@ int main() {
         goto end;
     }
 
-    printf("[OK] Signed Ciphertext\n");
+    printf("[OK] Signed transcript hash\n");
 
     if (send_handshake_msg(connfd, TLS_MSG_CERTIFICATE_VERIFY, signature, signature_len) == -1) {
         fprintf(stderr, "[ERROR] Failed to send CertificateVerify\n");
         goto end;
     }
 
-    printf("[SERVER] Sent Server Hello: Kem public key and Signature\n");
+    printf("[SERVER] Sent CertificateVerify\n");
+
+    
 
     /* Generate session key (AES Key) using HKDF_SHA256 */
     uint8_t aes_key[32];
@@ -225,7 +257,7 @@ int main() {
     printf("AES Key: \n");
     print_hex(aes_key, sizeof(aes_key));
 
-    /* 4. AES Encryption and Decryption Demo */
+    /* 5. AES Encryption and Decryption Demo */
     uint8_t iv[AES_GCM_IV_LEN];
     uint8_t tag[AES_GCM_TAG_LEN];
     uint32_t net_len;
@@ -306,7 +338,7 @@ end:
 
     /* Free */
     cleanup_mlkem(shared_secret, kem_public_key, ciphertext, kem);
-    cleanup_mldsa(sig_secret_key, signature, sig);
+    cleanup_mldsa(sig_secret_key, sig_public_key, signature, sig);
 
     return ret;
 }
@@ -322,13 +354,14 @@ void cleanup_mlkem(uint8_t *shared_secret, uint8_t *kem_public_key, uint8_t *cip
 	OQS_KEM_free(kem);
 }
 
-void cleanup_mldsa(uint8_t *sig_secret_key, uint8_t *signature, OQS_SIG *sig) {
+void cleanup_mldsa(uint8_t *sig_secret_key, uint8_t *sig_public_key, uint8_t *signature, OQS_SIG *sig) {
 	if (sig != NULL) {
         if (sig_secret_key != NULL) {
             OQS_MEM_secure_free(sig_secret_key, sig->length_secret_key);
         }
     }
 
+    OQS_MEM_insecure_free(sig_public_key);
     OQS_MEM_insecure_free(signature);
 	OQS_SIG_free(sig);
 }

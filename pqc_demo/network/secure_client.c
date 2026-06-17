@@ -61,12 +61,6 @@ int main() {
         goto end;
     }
 
-    // Load public key
-    if (load_file(PUBLIC_KEY_FILE, sig_public_key, sig->length_public_key) != 0) {
-        fprintf(stderr, "[ERROR] Cannot load ML-DSA public key\n");
-        goto end;
-    }
-
    /* Initialize ML-KEM */
     kem = OQS_KEM_new(OQS_KEM_alg_ml_kem_768);
     if (kem == NULL) {
@@ -172,6 +166,8 @@ int main() {
         goto end;
     }
 
+    printf("[CLIENT] Received Server Hello\n");
+
     ciphertext_length = body_len;
     if (ciphertext_length != kem->length_ciphertext) {
         fprintf(stderr, "[ERROR] Invalid Ciphertext length\n");
@@ -190,7 +186,36 @@ int main() {
     }
 
 
-    /* 3. Receive CertificateVerify */
+    /* 3. Receive Certificate */
+    received_bytes = recv_handshake_msg(sockfd, TLS_MSG_CERTIFICATE, sig_public_key, sig->length_public_key, &body_len);
+    if (received_bytes == -1) {
+        fprintf(stderr, "[ERROR] Failed to receive Certificate\n");
+        goto end;
+    } else if (received_bytes == 1) {
+        fprintf(stderr, "[CLIENT] Connection closed\n");
+        goto end;
+    }
+
+    printf("[CLIENT] Received Certificate\n");
+
+    if (body_len != sig->length_public_key) {
+        fprintf(stderr, "[ERROR] Invalid Certificate length\n");
+        goto end;
+    }
+
+    /* Update transcript after receiving Certificate */
+    if (encode_handshake_msg(TLS_MSG_CERTIFICATE, sig_public_key, body_len, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode Certificate for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
+    /* 4. Receive CertificateVerify */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_CERTIFICATE_VERIFY, signature, sig->length_signature, &body_len);
     if (received_bytes == -1) {
         fprintf(stderr, "[ERROR] Failed to receive CertificateVerify\n");
@@ -200,14 +225,14 @@ int main() {
         goto end;
     }
 
+    printf("[CLIENT] Received CertificateVerify\n");
+
     if (body_len == 0 || body_len > sig->length_signature) {
         fprintf(stderr, "[ERROR] Invalid Signature length\n");
         goto end;
     }
 
     signature_length = body_len;
-
-    printf("[CLIENT] Received Server Hello\n");
 
     /* Get hash for transcript to sign */
     if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
@@ -243,7 +268,7 @@ int main() {
     print_hex(aes_key, sizeof(aes_key));
 
 
-    /* 4. AES Encryption and Decryption Demo */
+    /* 5. AES Encryption and Decryption Demo */
     const char *message = "Hello Secure PQC!";
     uint8_t iv[AES_GCM_IV_LEN];
     uint8_t tag[AES_GCM_TAG_LEN];
