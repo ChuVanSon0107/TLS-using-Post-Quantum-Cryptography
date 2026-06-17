@@ -4,7 +4,7 @@ CPPFLAGS += -Iinclude $(shell pkg-config --cflags liboqs)
 LDLIBS += $(shell pkg-config --libs liboqs openssl)
 
 BUILD_DIR := build
-COMMON_SRCS := src/common.c src/aes_gcm.c src/kdf.c src/sig_utils.c src/tls_handshake.c
+COMMON_SRCS := src/common.c src/aes_gcm.c src/kdf.c src/sig_utils.c src/tls_handshake.c src/tls_transcript.c
 
 .PHONY: all clean
 

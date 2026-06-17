@@ -11,6 +11,7 @@
 #include "kdf.h"
 #include "sig_utils.h"
 #include "tls_handshake.h"
+#include "tls_transcript.h"
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8080
@@ -25,16 +26,12 @@ int main() {
     int sockfd = -1;
     int ret = EXIT_FAILURE;
     struct sockaddr_in server_addr;
-    int received_bytes;
-    size_t signature_length;
-    size_t ciphertext_length;
-    uint32_t network_bytes; // network bytes
-    size_t body_len;
 
     /* ML-DSA */
     OQS_SIG *sig = NULL;
     uint8_t *sig_public_key = NULL;
     uint8_t *signature = NULL;
+    size_t signature_length;
 
     /* ML-KEM */
     OQS_KEM *kem = NULL;
@@ -42,6 +39,7 @@ int main() {
     uint8_t *kem_secret_key = NULL;
     uint8_t *shared_secret = NULL;
     uint8_t *ciphertext = NULL;
+    size_t ciphertext_length;
 
     /* Initialize ML-DSA-65 */
     sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
@@ -127,6 +125,23 @@ int main() {
 
     printf("[CLIENT] Connected to server\n");
 
+    /* Handshake parameters */
+    int received_bytes;
+    uint32_t network_bytes; // network bytes
+    size_t body_len;
+    tls_transcript transcript;
+    uint8_t encoded_msg[4096];
+    size_t encoded_len;
+    uint8_t transcript_hash[TLS_TRANSCRIPT_HASH_LEN];
+    size_t transcript_hash_len;
+
+    /* Init transcript */
+    if (transcript_init(&transcript) != 0) {
+        fprintf(stderr, "[ERROR] Failed to initialize transcript\n");
+        goto end;
+    }
+
+
     /* 1. Send Client Hello */
     if (send_handshake_msg(sockfd, TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key) == -1) {
         fprintf(stderr, "[ERROR] Failed to send Client Hello");
@@ -134,6 +149,18 @@ int main() {
     }
 
     printf("[CLIENT] Sent Client Hello\n");
+
+    /* Update transcript after sending ClientHello */
+    if (encode_handshake_msg(TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode ClientHello for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
 
     /* 2. Receive Server Hello */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_SERVER_HELLO, ciphertext, kem->length_ciphertext, &body_len);
@@ -149,9 +176,21 @@ int main() {
     if (ciphertext_length != kem->length_ciphertext) {
         fprintf(stderr, "[ERROR] Invalid Ciphertext length\n");
         goto end;
+    } 
+
+    /* Update transcript after receiving Server Hello */
+    if (encode_handshake_msg(TLS_MSG_SERVER_HELLO, ciphertext, ciphertext_length, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encoded ServerHello for transcript\n");
+        goto end;
     }
 
-    /* Receive CertificateVerify */
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
+    /* 3. Receive CertificateVerify */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_CERTIFICATE_VERIFY, signature, sig->length_signature, &body_len);
     if (received_bytes == -1) {
         fprintf(stderr, "[ERROR] Failed to receive CertificateVerify\n");
@@ -170,8 +209,14 @@ int main() {
 
     printf("[CLIENT] Received Server Hello\n");
 
+    /* Get hash for transcript to sign */
+    if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to get transcript hash\n");
+        goto end;
+    }
+
     /* Verify signature */
-    if (OQS_SIG_verify(sig, ciphertext, ciphertext_length, signature, signature_length, sig_public_key) != OQS_SUCCESS) {
+    if (OQS_SIG_verify(sig, transcript_hash, transcript_hash_len, signature, signature_length, sig_public_key) != OQS_SUCCESS) {
         fprintf(stderr, "[CLIENT] Signature verification failed\n");
         goto end;
     }   
@@ -186,6 +231,7 @@ int main() {
 
     printf("[OK] Decapsulation completed\n");
 
+
     /* Generate session key (AES Key) using HKDF_SHA256 */
     uint8_t aes_key[32];
     if (derive_aes256_key_hkdf(shared_secret, kem->length_shared_secret, aes_key, sizeof(aes_key)) != 0) {
@@ -197,7 +243,7 @@ int main() {
     print_hex(aes_key, sizeof(aes_key));
 
 
-    /* 3. AES Encryption and Decryption Demo */
+    /* 4. AES Encryption and Decryption Demo */
     const char *message = "Hello Secure PQC!";
     uint8_t iv[AES_GCM_IV_LEN];
     uint8_t tag[AES_GCM_TAG_LEN];

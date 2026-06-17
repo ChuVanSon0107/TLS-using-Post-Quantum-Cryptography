@@ -1,6 +1,7 @@
 #include "tls_handshake.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "common.h"
 
@@ -48,8 +49,7 @@ int recv_handshake_msg(int sockfd, uint8_t expected_type, uint8_t *body, size_t 
 
     len = ((size_t)header[1] << 16) | ((size_t)header[2] << 8) | (size_t)header[3];
     if (header[0] != expected_type) {
-        fprintf(stderr, "[ERROR] Unexpected handshake type: got %u, expected %u\n",
-                header[0], expected_type);
+        fprintf(stderr, "[ERROR] Unexpected handshake type: got %u, expected %u\n", header[0], expected_type);
         return -1;
     }
 
@@ -65,5 +65,32 @@ int recv_handshake_msg(int sockfd, uint8_t expected_type, uint8_t *body, size_t 
     }
 
     *body_len = len;
+    return 0;
+}
+
+int encode_handshake_msg(uint8_t msg_type, const uint8_t *body, size_t body_len, uint8_t *out, size_t out_capacity, size_t *out_len) {
+    if (out == NULL || out_len == NULL) {
+        return -1;
+    }
+
+    if (body_len > TLS_HANDSHAKE_MAX_BODY_LEN || out_capacity < TLS_HANDSHAKE_HEADER_LEN + body_len) {
+        return -1;
+    }
+
+    if (body_len > 0 && body == NULL) {
+        return -1;
+    }
+
+    /* TLS - Handshake header: byte 0 = msg_type, byte 1-3 = body length */
+    out[0] = msg_type;
+    out[1] = (uint8_t)((body_len >> 16) & 0xff);
+    out[2] = (uint8_t)((body_len >> 8) & 0xff);
+    out[3] = (uint8_t)(body_len & 0xff);
+
+    if (body_len > 0) {
+        memcpy(out + TLS_HANDSHAKE_HEADER_LEN, body, body_len);
+    }
+
+    *out_len = TLS_HANDSHAKE_HEADER_LEN + body_len;
     return 0;
 }
