@@ -10,6 +10,7 @@
 #include "aes_gcm.h"
 #include "kdf.h"
 #include "sig_utils.h"
+#include "tls_handshake.h"
 
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 4096
@@ -26,7 +27,7 @@ int main() {
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
     int received_bytes;
-    uint32_t network_bytes; // network bytes
+    size_t body_len;
 
     /* ML-DSA */
     OQS_SIG *sig = NULL;
@@ -123,12 +124,18 @@ int main() {
     printf("[SERVER] Client connected\n");
 
     /* 1. Receive Client Hello */
-    received_bytes = recv_all(connfd, kem_public_key, kem->length_public_key);
+    received_bytes = recv_handshake_msg(connfd, TLS_MSG_CLIENT_HELLO, kem_public_key,
+                                        kem->length_public_key, &body_len);
     if (received_bytes == -1) {
         fprintf(stderr, "[ERROR] Failed to receive Client Hello\n");
         goto end;
     } else if (received_bytes == 1) {
         fprintf(stderr, "[SERVER] Connection closed\n");
+        goto end;
+    }
+
+    if (body_len != kem->length_public_key) {
+        fprintf(stderr, "[ERROR] Invalid Client Hello length\n");
         goto end;
     }
 
@@ -151,29 +158,13 @@ int main() {
 
     printf("[OK] Signed Ciphertext\n");
 
-    /* Send Ciphertext length */
-    network_bytes = htonl(kem->length_ciphertext);
-    if (send_all(connfd, (uint8_t *)&network_bytes, sizeof(network_bytes)) == -1) {
+    if (send_handshake_msg(connfd, TLS_MSG_SERVER_HELLO, ciphertext, kem->length_ciphertext) == -1) {
         fprintf(stderr, "[ERROR] Failed to send Server Hello\n");
         goto end;
     }
 
-    /* Send Ciphertext */
-    if (send_all(connfd, ciphertext, kem->length_ciphertext) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send Server Hello\n");
-        goto end;
-    }
-
-    /* Send Signature length */
-    network_bytes = htonl(signature_len);
-    if (send_all(connfd, (uint8_t *)&network_bytes, sizeof(network_bytes)) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send Server Hello\n");
-        goto end;
-    }
-
-    // Send Signature
-    if (send_all(connfd, signature, signature_len) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send Server Hello\n");
+    if (send_handshake_msg(connfd, TLS_MSG_CERTIFICATE_VERIFY, signature, signature_len) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send CertificateVerify\n");
         goto end;
     }
 
@@ -227,6 +218,10 @@ int main() {
     }
     
     int ciptext_len = ntohl(net_len);
+    if (ciptext_len <= 0 || (size_t)ciptext_len > sizeof(ciptext)) {
+        fprintf(stderr, "[ERROR] Invalid ciphertext length\n");
+        goto end;
+    }
 
     // receive ciphertext
     received_bytes = recv_all(connfd, ciptext, ciptext_len);

@@ -5,6 +5,7 @@
 /* Load public key and secret key => to sign and verify*/
 int load_file(const char *filename, uint8_t *buffer, size_t expected_size) {
     FILE *fp = fopen(filename, "rb");
+    int ret = -1;
     if (fp == NULL) {
         perror("fopen");
         return -1;
@@ -13,8 +14,12 @@ int load_file(const char *filename, uint8_t *buffer, size_t expected_size) {
     size_t n = fread(buffer, 1, expected_size, fp);
     if (n != expected_size) {
         fprintf(stderr, "[ERROR] Invalid key file\n");
-        return -1;
+        goto end;
     }
 
-    return 0;
+    ret = 0;
+
+end:
+    fclose(fp);
+    return ret;
 }

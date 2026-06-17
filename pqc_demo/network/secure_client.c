@@ -10,6 +10,7 @@
 #include "aes_gcm.h"
 #include "kdf.h"
 #include "sig_utils.h"
+#include "tls_handshake.h"
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8080
@@ -25,9 +26,10 @@ int main() {
     int ret = EXIT_FAILURE;
     struct sockaddr_in server_addr;
     int received_bytes;
-    int signature_length;
-    int ciphertext_length;
+    size_t signature_length;
+    size_t ciphertext_length;
     uint32_t network_bytes; // network bytes
+    size_t body_len;
 
     /* ML-DSA */
     OQS_SIG *sig = NULL;
@@ -126,7 +128,7 @@ int main() {
     printf("[CLIENT] Connected to server\n");
 
     /* 1. Send Client Hello */
-    if (send_all(sockfd, kem_public_key, kem->length_public_key) == -1) {
+    if (send_handshake_msg(sockfd, TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key) == -1) {
         fprintf(stderr, "[ERROR] Failed to send Client Hello");
         goto end;
     }
@@ -134,53 +136,37 @@ int main() {
     printf("[CLIENT] Sent Client Hello\n");
 
     /* 2. Receive Server Hello */
-    /* Receive Ciphertext length */
-    received_bytes = recv_all(sockfd, (uint8_t *)&network_bytes, sizeof(network_bytes));
+    received_bytes = recv_handshake_msg(sockfd, TLS_MSG_SERVER_HELLO, ciphertext, kem->length_ciphertext, &body_len);
     if (received_bytes == -1) {
         fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
         goto end;
     } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
+        fprintf(stderr, "[CLIENT] Connection closed\n");
         goto end;
     }
 
-    ciphertext_length = ntohl(network_bytes);
+    ciphertext_length = body_len;
     if (ciphertext_length != kem->length_ciphertext) {
         fprintf(stderr, "[ERROR] Invalid Ciphertext length\n");
         goto end;
     }
 
-    /* Receive Ciphertext */
-    received_bytes = recv_all(sockfd, ciphertext, kem->length_ciphertext);
+    /* Receive CertificateVerify */
+    received_bytes = recv_handshake_msg(sockfd, TLS_MSG_CERTIFICATE_VERIFY, signature, sig->length_signature, &body_len);
     if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
+        fprintf(stderr, "[ERROR] Failed to receive CertificateVerify\n");
         goto end;
     } else if (received_bytes == 1) {
         fprintf(stderr, "[CLIENT] Connection closed\n");
         goto end;
     }
 
-   /* Receive Signature length */
-    received_bytes = recv_all(sockfd, (uint8_t *)&network_bytes, sizeof(network_bytes));
-    if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
-        goto end;
-    } else if (received_bytes == 1) {
-        fprintf(stderr, "[CLIENT] Connection closed\n");
+    if (body_len == 0 || body_len > sig->length_signature) {
+        fprintf(stderr, "[ERROR] Invalid Signature length\n");
         goto end;
     }
 
-    signature_length = ntohl(network_bytes);
-
-    /* Receive Signature */
-    received_bytes = recv_all(sockfd, signature, sig->length_signature);
-    if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive Server Hello\n");
-        goto end;
-    } else if (received_bytes == 1) {
-        fprintf(stderr, "[CLIENT] Connection closed\n");
-        goto end;
-    }
+    signature_length = body_len;
 
     printf("[CLIENT] Received Server Hello\n");
 
@@ -270,7 +256,7 @@ end:
     }
     
     /* Free */
-        cleanup_mlkem(kem_public_key, kem_secret_key, shared_secret, ciphertext, kem);
+    cleanup_mlkem(kem_public_key, kem_secret_key, shared_secret, ciphertext, kem);
     cleanup_mldsa(sig_public_key,  signature, sig);
 
     return ret;
