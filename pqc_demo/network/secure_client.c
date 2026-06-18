@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <oqs/oqs.h>
+#include <openssl/crypto.h>
 
 #include "common.h"
 #include "aes_gcm.h"
@@ -12,6 +13,7 @@
 #include "sig_utils.h"
 #include "tls_handshake.h"
 #include "tls_transcript.h"
+#include "tls_finished.h"
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8080
@@ -26,6 +28,7 @@ int main() {
     int sockfd = -1;
     int ret = EXIT_FAILURE;
     struct sockaddr_in server_addr;
+    int transcript_initialized = 0;
 
     /* ML-DSA */
     OQS_SIG *sig = NULL;
@@ -128,6 +131,9 @@ int main() {
     size_t encoded_len;
     uint8_t transcript_hash[TLS_TRANSCRIPT_HASH_LEN];
     size_t transcript_hash_len;
+    uint8_t server_finished[TLS_FINISHED_VERIFY_DATA_LEN];
+    uint8_t expected_server_finished[TLS_FINISHED_VERIFY_DATA_LEN];
+    uint8_t client_finished[TLS_FINISHED_VERIFY_DATA_LEN];
 
     /* Init transcript */
     if (transcript_init(&transcript) != 0) {
@@ -135,6 +141,7 @@ int main() {
         goto end;
     }
 
+    transcript_initialized = 1;
 
     /* 1. Send Client Hello */
     if (send_handshake_msg(sockfd, TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key) == -1) {
@@ -269,6 +276,86 @@ int main() {
     printf("[OK] Decapsulation completed\n");
 
 
+    /* 5. Receive Server Finished */
+    received_bytes = recv_handshake_msg(sockfd, TLS_MSG_FINISHED, server_finished, sizeof(server_finished), &body_len);
+    if (received_bytes == -1) {
+        fprintf(stderr, "[ERROR] Failed to receive Server Finished\n");
+        goto end;
+    } else if (received_bytes == 1) {
+        fprintf(stderr, "[CLIENT] Connection closed\n");
+        goto end;
+    }
+
+    printf("[CLIENT] Received Server Finished\n");
+
+    if (body_len != TLS_FINISHED_VERIFY_DATA_LEN) {
+        fprintf(stderr, "[ERROR] Invalid Server Finished length\n");
+        goto end;
+    }
+
+    /* Calculate exptected Server Finished */
+    if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to get transcript hash\n");
+        goto end;
+    }
+
+    if (compute_finished_verify_data(shared_secret, kem->length_shared_secret, TLS_SERVER_FINISHED_LABEL, transcript_hash, transcript_hash_len, expected_server_finished, sizeof(expected_server_finished)) != 0) {
+        fprintf(stderr, "[ERROR] Failed to compute expected Server Finished\n");
+        goto end;
+    }
+
+    if (CRYPTO_memcmp(server_finished, expected_server_finished, TLS_FINISHED_VERIFY_DATA_LEN) != 0) {
+        fprintf(stderr, "[CLIENT] Server Finished verification failed\n");
+        goto end;
+    }
+
+    printf("[OK] Server Finished verified\n");
+
+    /* Update transcript after receiving Server Finished */
+    if (encode_handshake_msg(TLS_MSG_FINISHED, server_finished, sizeof(server_finished), encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode Server Finished for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+    /* 6. Send Client Finished */
+    /* Get hash value for transcript => to calculate MAC */
+    if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to get hash for transcript\n");
+        goto end;
+    }
+
+    /* Compute MAC for transcript hash => verify data */
+    if (compute_finished_verify_data(shared_secret, kem->length_shared_secret, TLS_CLIENT_FINISHED_LABEL, transcript_hash, transcript_hash_len, client_finished, sizeof(client_finished)) != 0) {
+        fprintf(stderr, "[ERROR] Failed to compute Client Finished\n");
+        goto end;
+    }
+
+    /* Send Client Finished */
+    if (send_handshake_msg(sockfd, TLS_MSG_FINISHED, client_finished, sizeof(client_finished)) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send Client Finished\n");
+        goto end;
+    }
+
+    printf("[CLIENT] Sent Client Finished\n");
+
+    /* Update transcript after sending Client Finished */
+    if (encode_handshake_msg(TLS_MSG_FINISHED, client_finished, sizeof(client_finished), encoded_msg, sizeof(encoded_msg), &encoded_len) != 0){
+        fprintf(stderr, "[ERROR] Failed to encode Client Finished for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
+
     /* Generate session key (AES Key) using HKDF_SHA256 */
     uint8_t aes_key[32];
     if (derive_aes256_key_hkdf(shared_secret, kem->length_shared_secret, aes_key, sizeof(aes_key)) != 0) {
@@ -336,6 +423,10 @@ end:
     /* Close socket */
     if (sockfd != -1) {
         close(sockfd);
+    }
+
+    if (transcript_initialized) {
+        transcript_free(&transcript);
     }
     
     /* Free */

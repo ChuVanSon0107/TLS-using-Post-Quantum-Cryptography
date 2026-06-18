@@ -2,6 +2,7 @@
 #define TLS_TRANSCRIPT_H
 
 #include <stdint.h>
+#include <stddef.h>
 #include <openssl/evp.h>
 
 #define TLS_TRANSCRIPT_HASH_LEN 32 // SHA-256: ouput = 32 bytes

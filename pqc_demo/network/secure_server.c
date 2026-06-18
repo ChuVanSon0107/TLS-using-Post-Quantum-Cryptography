@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <oqs/oqs.h>
+#include <openssl/crypto.h>
 
 #include "common.h"
 #include "aes_gcm.h"
@@ -12,6 +13,7 @@
 #include "sig_utils.h"
 #include "tls_handshake.h"
 #include "tls_transcript.h"
+#include "tls_finished.h"
 
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 4096
@@ -27,6 +29,7 @@ int main() {
     int ret = EXIT_FAILURE;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_len = sizeof(client_addr);
+    int transcript_initialized = 0;
 
     /* ML-DSA */
     OQS_SIG *sig = NULL;
@@ -139,6 +142,9 @@ int main() {
     size_t encoded_len;
     uint8_t transcript_hash[TLS_TRANSCRIPT_HASH_LEN];
     size_t transcript_hash_len;
+    uint8_t server_finished[TLS_FINISHED_VERIFY_DATA_LEN];
+    uint8_t client_finished[TLS_FINISHED_VERIFY_DATA_LEN];
+    uint8_t expected_client_finished[TLS_FINISHED_VERIFY_DATA_LEN];
 
     /* Init transcript */
     if (transcript_init(&transcript) != 0) {
@@ -146,6 +152,7 @@ int main() {
         goto end;
     }
 
+    transcript_initialized = 1;
 
     /* 1. Receive Client Hello */
     received_bytes = recv_handshake_msg(connfd, TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key, &body_len);
@@ -226,7 +233,7 @@ int main() {
 
 
     /* 4. Send CertificateVerify */
-    /* Get hash for transcript to sign */
+    /* Get hash value for transcript to sign */
     if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
         fprintf(stderr, "[ERROR] Failed to get transcript hash\n");
         goto end;
@@ -250,6 +257,86 @@ int main() {
     /* Update transcript after sending CertificateVerify */
     if (encode_handshake_msg(TLS_MSG_CERTIFICATE_VERIFY, signature, signature_len, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
         fprintf(stderr, "[ERROR] Failed to encode CertificateVerify for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
+    /* 5. Send Server Finished */
+    /* Get hash value for transcript to sign */
+    if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to get transcript hash\n");
+        goto end;
+    }
+
+    /* Compute MAC for transcript hash => verify data */
+    if (compute_finished_verify_data(shared_secret, kem->length_shared_secret, TLS_SERVER_FINISHED_LABEL, transcript_hash, transcript_hash_len, server_finished, sizeof(server_finished)) != 0) {
+        fprintf(stderr, "[ERROR] Failed to compute Server Finished\n");
+        goto end;
+    }
+
+    /* Send Server Finished */
+    if (send_handshake_msg(connfd, TLS_MSG_FINISHED, server_finished, sizeof(server_finished)) == -1) {
+        fprintf(stderr, "[ERROR] Failed to send Server Finished\n");
+        goto end;
+    }
+
+    printf("[SERVER] Sent Server Finished\n");
+
+    /* Update transcript after sending Server Finished */
+    if (encode_handshake_msg(TLS_MSG_FINISHED, server_finished, sizeof(server_finished), encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode Server Finished for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
+    /* 6. Receive Client Finished */
+    received_bytes = recv_handshake_msg(connfd, TLS_MSG_FINISHED, client_finished, sizeof(client_finished), &body_len);
+    if (received_bytes == -1) {
+        fprintf(stderr, "[ERROR] Failed to receive Client Finished\n");
+        goto end;
+    } else if (received_bytes == 1) {
+        fprintf(stderr, "[SERVER] Connection closed\n");
+        goto end;
+    }
+
+    printf("[SERVER] Received Client Finished\n");
+
+    if (body_len != TLS_FINISHED_VERIFY_DATA_LEN) {
+        fprintf(stderr, "[ERROR] Invalid Client Finished length\n");
+        goto end;
+    }
+
+    /* Calculate expected Client Finished */
+    if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to get transcript hash\n");
+        goto end;
+    }
+
+    if (compute_finished_verify_data(shared_secret, kem->length_shared_secret, TLS_CLIENT_FINISHED_LABEL, transcript_hash, transcript_hash_len, expected_client_finished, sizeof(expected_client_finished)) != 0) {
+        fprintf(stderr, "[ERROR] Failed to compute expected Client Finished\n");
+        goto end;
+    }
+
+    if (CRYPTO_memcmp(client_finished, expected_client_finished, TLS_FINISHED_VERIFY_DATA_LEN) != 0) {
+        fprintf(stderr, "[CLIENT] Client Finished verification failed\n");
+        goto end;
+    }
+
+    printf("[OK] Client Finished verified\n");
+
+    /* Update transcript after receiving Server Finished */
+    if (encode_handshake_msg(TLS_MSG_FINISHED, client_finished, sizeof(client_finished), encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode Client Finished for transcript\n");
         goto end;
     }
 
@@ -346,6 +433,10 @@ end:
     
     if (listenfd != -1) {
         close(listenfd);
+    }
+
+    if (transcript_initialized) {
+        transcript_free(&transcript);
     }
 
     /* Free */
