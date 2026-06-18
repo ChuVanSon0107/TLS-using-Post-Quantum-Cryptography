@@ -85,6 +85,12 @@ int main() {
         goto end;
     }
 
+    printf("ML-KEM: %s\n", kem->method_name);
+    printf("Public Key Size: %zu\n", kem->length_public_key);
+    printf("Secret Key Size: %zu\n", kem->length_secret_key);
+    printf("Ciphertext Size: %zu\n", kem->length_ciphertext);
+    printf("Shared Secret: %zu\n", kem->length_shared_secret);
+
     /* Allocate public key buffer */
     kem_public_key = OQS_MEM_malloc(kem->length_public_key);
     ciphertext = OQS_MEM_malloc(kem->length_ciphertext);
