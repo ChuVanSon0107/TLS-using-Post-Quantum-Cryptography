@@ -248,6 +248,18 @@ int main() {
 
     printf("[OK] Signature verified\n");
 
+    /* Update transcript after receiving CertificateVerify */
+    if (encode_handshake_msg(TLS_MSG_CERTIFICATE_VERIFY, signature, signature_length, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode CertificateVerify for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
+
     /* Decapsulation => shared_secret */
     if (OQS_KEM_decaps(kem, shared_secret, ciphertext, kem_secret_key) != OQS_SUCCESS) {
         fprintf(stderr, "[ERROR] OQS_KEM_decaps failed\n");

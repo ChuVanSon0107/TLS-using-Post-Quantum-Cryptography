@@ -172,6 +172,7 @@ int main() {
 
     if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
     }
 
 
@@ -204,6 +205,7 @@ int main() {
     }
 
     /* 3. Send Certificate */
+    /* This Certificate message carries a raw ML-DSA public key */
     if (send_handshake_msg(connfd, TLS_MSG_CERTIFICATE, sig_public_key, sig->length_public_key) == -1) {
         fprintf(stderr, "[ERROR] Failed to send Certificate\n");
         goto end;
@@ -245,7 +247,17 @@ int main() {
 
     printf("[SERVER] Sent CertificateVerify\n");
 
-    
+    /* Update transcript after sending CertificateVerify */
+    if (encode_handshake_msg(TLS_MSG_CERTIFICATE_VERIFY, signature, signature_len, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to encode CertificateVerify for transcript\n");
+        goto end;
+    }
+
+    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to update transcript\n");
+        goto end;
+    }
+
 
     /* Generate session key (AES Key) using HKDF_SHA256 */
     uint8_t aes_key[32];
