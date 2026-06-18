@@ -14,6 +14,7 @@
 #include "tls_handshake.h"
 #include "tls_transcript.h"
 #include "tls_finished.h"
+#include "tls_record.h"
 
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 4096
@@ -81,7 +82,7 @@ int main() {
     kem = OQS_KEM_new(OQS_KEM_alg_ml_kem_768);
     if (kem == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize ML-KEM\n");
-        return EXIT_FAILURE;
+        goto end;
     }
 
     /* Allocate public key buffer */
@@ -353,74 +354,22 @@ int main() {
         goto end;
     }
 
-    printf("AES Key: \n");
+    printf("AES Key: ");
     print_hex(aes_key, sizeof(aes_key));
 
-    /* 5. AES Encryption and Decryption Demo */
-    uint8_t iv[AES_GCM_IV_LEN];
-    uint8_t tag[AES_GCM_TAG_LEN];
-    uint32_t net_len;
-    uint8_t ciptext[1024];
+    /* 7. AES Encryption and Decryption Demo */
     uint8_t plaintext[1024];
+    size_t plaintext_len;
 
-    // receive IV
-    received_bytes = recv_all(connfd, iv, sizeof(iv));
-    if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive IV\n");
-        goto end;
-    } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
-        goto end;
-    }
-
-    // receive TAG
-    received_bytes = recv_all(connfd, tag, sizeof(tag));
-    if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive TAG\n");
-        goto end;
-    } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
-        goto end;
-    }
-
-    // receive Length
-    received_bytes = recv_all(connfd, (uint8_t *)&net_len, sizeof(net_len));
-    if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive IV\n");
-        goto end;
-    } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
-        goto end;
-    }
-    
-    int ciptext_len = ntohl(net_len);
-    if (ciptext_len <= 0 || (size_t)ciptext_len > sizeof(ciptext)) {
-        fprintf(stderr, "[ERROR] Invalid ciphertext length\n");
-        goto end;
-    }
-
-    // receive ciphertext
-    received_bytes = recv_all(connfd, ciptext, ciptext_len);
-    if (received_bytes == -1) {
-        fprintf(stderr, "[ERROR] Failed to receive ciphertext\n");
-        goto end;
-    } else if (received_bytes == 1) {
-        fprintf(stderr, "[SERVER] Connection closed\n");
-        goto end;
-    }
-
-    printf("[SERVER] Received Application Data from Client\n");
-
-    // decrypt ciphertext
-    int plaintext_len = aes_gcm_decrypt(ciptext, ciptext_len, tag, aes_key, iv, plaintext);
-    if (plaintext_len < 0) {
-        fprintf(stderr, "[ERROR] Decrypt failed\n");
+    if (recv_encrypted_record(connfd, plaintext, sizeof(plaintext) - 1, &plaintext_len, aes_key) != 0) {
+        fprintf(stderr, "[ERROR] Failed to receive encrypted application record\n");
         goto end;
     }
 
     plaintext[plaintext_len] = '\0';
-    printf("[OK] Decrypted message: %s\n", plaintext);
 
+    printf("[SERVER] Received Application Data record from Client\n");
+    printf("[OK] Decrypted message: %s\n", plaintext);
 
     ret = EXIT_SUCCESS;
     printf("[SERVER] Connection closed\n");

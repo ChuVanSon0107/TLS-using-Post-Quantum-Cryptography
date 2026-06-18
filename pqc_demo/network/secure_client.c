@@ -14,6 +14,7 @@
 #include "tls_handshake.h"
 #include "tls_transcript.h"
 #include "tls_finished.h"
+#include "tls_record.h"
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8080
@@ -48,7 +49,7 @@ int main() {
     sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
     if (sig == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize ML-DSA\n");
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("ML-DSA: %s\n", sig->method_name);
@@ -68,7 +69,7 @@ int main() {
     kem = OQS_KEM_new(OQS_KEM_alg_ml_kem_768);
     if (kem == NULL) {
         fprintf(stderr, "[ERROR] Failed to initialize ML-KEM\n");
-        return EXIT_FAILURE;
+        goto end;
     }
 
     printf("ML-KEM: %s\n", kem->method_name);
@@ -124,7 +125,6 @@ int main() {
 
     /* Handshake parameters */
     int received_bytes;
-    uint32_t network_bytes; // network bytes
     size_t body_len;
     tls_transcript transcript;
     uint8_t encoded_msg[4096];
@@ -363,58 +363,18 @@ int main() {
         goto end;
     }
 
-    printf("AES Key: \n");
+    printf("AES Key: ");
     print_hex(aes_key, sizeof(aes_key));
 
 
-    /* 5. AES Encryption and Decryption Demo */
+    /* 7. AES Encryption and Decryption Demo */
     const char *message = "Hello Secure PQC!";
-    uint8_t iv[AES_GCM_IV_LEN];
-    uint8_t tag[AES_GCM_TAG_LEN];
-    uint8_t ciptext[1024];
-    OQS_randombytes(iv, sizeof(iv));
-
-    // Encrypt message
-    int ciptext_len = aes_gcm_encrypt((const uint8_t *)message, strlen(message), aes_key, iv, ciptext, tag);
-    if (ciptext_len < 0) {
-        fprintf(stderr, "[ERROR] Encryption failed\n");
+    if (send_encrypted_record(sockfd, (const uint8_t *)message, strlen(message), aes_key) != 0) {
+        fprintf(stderr, "[ERROR] Failed to send encrypted application record\n");
         goto end;
     }
 
-    printf("[OK] Encrypted message: \n");
-    printf("IV: ");
-    print_hex(iv, sizeof(iv));
-    printf("TAG: ");
-    print_hex(tag, sizeof(tag));
-    printf("Ciphertext: ");
-    print_hex(ciptext, ciptext_len);
-
-    // Send IV
-    if (send_all(sockfd, iv, sizeof(iv)) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send IV\n");
-        goto end;
-    }
-
-    // send TAG
-    if (send_all(sockfd, tag, sizeof(tag)) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send TAG\n");
-        goto end;
-    }
-
-    // send length
-    network_bytes = htonl(ciptext_len);
-    if (send_all(sockfd, (uint8_t *)&network_bytes, sizeof(network_bytes)) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send length of ciphertext\n");
-        goto end;
-    }
-
-    // send ciphertext
-    if (send_all(sockfd, ciptext, ciptext_len) == -1) {
-        fprintf(stderr, "[ERROR] Failed to send ciphertext\n");
-        goto end;  
-    }
-
-    printf("[CLIENT] Sent Application Data to Server\n");
+    printf("[CLIENT] Sent Application Data record to Server\n");
 
     ret = EXIT_SUCCESS;
     printf("[CLIENT] Connection closed\n");

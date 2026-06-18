@@ -27,10 +27,7 @@ int aes_gcm_encrypt(
         return AES_ERROR;
     }
 
-    /*
-     * Initialize AES-256-GCM cipher.
-     * No key or IV is supplied at this stage.
-     */
+    /* Initialize AES-256-GCM cipher with no key or IV is supplied at this stage */
     if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
@@ -48,10 +45,7 @@ int aes_gcm_encrypt(
         return AES_ERROR;
     }
 
-    /*
-     * Encrypt plaintext.
-     * The encrypted result is stored in ciphertext.
-     */
+    /* Encrypt plaintext. */
     if (EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
@@ -59,11 +53,7 @@ int aes_gcm_encrypt(
 
     ciphertext_len = len;
 
-    /*
-     * Finalize encryption.
-     * For GCM mode, this usually produces no extra bytes,
-     * but should always be called.
-     */
+    /* Encryption */
     if (EVP_EncryptFinal_ex(ctx, ciphertext + len, &len) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
@@ -71,10 +61,7 @@ int aes_gcm_encrypt(
 
     ciphertext_len += len;
 
-    /*
-     * Retrieve authentication tag.
-     * The receiver will use this tag to verify integrity.
-     */
+    /* Retrieve authentication tag. */
     if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, AES_GCM_TAG_LEN, tag) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
@@ -108,10 +95,7 @@ int aes_gcm_decrypt(
         return AES_ERROR;
     }
 
-    /*
-     * Initialize AES-256-GCM cipher.
-     * No key or IV is supplied at this stage.
-     */
+    /* Initialize AES-256-GCM cipher with no key or IV is supplied at this stage. */
     if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, NULL, NULL) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
