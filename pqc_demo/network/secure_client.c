@@ -15,6 +15,7 @@
 #include "tls_transcript.h"
 #include "tls_finished.h"
 #include "tls_record.h"
+#include "tls_key_schedule.h"
 
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 8080
@@ -44,6 +45,9 @@ int main() {
     uint8_t *shared_secret = NULL;
     uint8_t *ciphertext = NULL;
     size_t ciphertext_length;
+
+    /* TLS APPLICATION KEY */
+    tls_application_keys application_keys = {0};
 
     /* Initialize ML-DSA-65 */
     sig = OQS_SIG_new(OQS_SIG_alg_ml_dsa_65);
@@ -127,8 +131,6 @@ int main() {
     int received_bytes;
     size_t body_len;
     tls_transcript transcript;
-    uint8_t encoded_msg[4096];
-    size_t encoded_len;
     uint8_t transcript_hash[TLS_TRANSCRIPT_HASH_LEN];
     size_t transcript_hash_len;
     uint8_t server_finished[TLS_FINISHED_VERIFY_DATA_LEN];
@@ -152,16 +154,10 @@ int main() {
     printf("[CLIENT] Sent Client Hello\n");
 
     /* Update transcript after sending ClientHello */
-    if (encode_handshake_msg(TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
-        fprintf(stderr, "[ERROR] Failed to encode ClientHello for transcript\n");
-        goto end;
-    }
-
-    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+    if (transcript_update_handshake_msg(&transcript, TLS_MSG_CLIENT_HELLO, kem_public_key, kem->length_public_key) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
         goto end;
     }
-
 
     /* 2. Receive Server Hello */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_SERVER_HELLO, ciphertext, kem->length_ciphertext, &body_len);
@@ -182,16 +178,18 @@ int main() {
     } 
 
     /* Update transcript after receiving Server Hello */
-    if (encode_handshake_msg(TLS_MSG_SERVER_HELLO, ciphertext, ciphertext_length, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
-        fprintf(stderr, "[ERROR] Failed to encoded ServerHello for transcript\n");
-        goto end;
-    }
-
-    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+    if (transcript_update_handshake_msg(&transcript, TLS_MSG_SERVER_HELLO, ciphertext, kem->length_ciphertext) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
         goto end;
     }
 
+    /* Decapsulation => shared_secret */
+    if (OQS_KEM_decaps(kem, shared_secret, ciphertext, kem_secret_key) != OQS_SUCCESS) {
+        fprintf(stderr, "[ERROR] OQS_KEM_decaps failed\n");
+        goto end;
+    }
+
+    printf("[OK] Decapsulation completed\n");
 
     /* 3. Receive Certificate */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_CERTIFICATE, sig_public_key, sig->length_public_key, &body_len);
@@ -211,16 +209,10 @@ int main() {
     }
 
     /* Update transcript after receiving Certificate */
-    if (encode_handshake_msg(TLS_MSG_CERTIFICATE, sig_public_key, body_len, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
-        fprintf(stderr, "[ERROR] Failed to encode Certificate for transcript\n");
-        goto end;
-    }
-
-    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+    if (transcript_update_handshake_msg(&transcript, TLS_MSG_CERTIFICATE, sig_public_key, sig->length_public_key) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
         goto end;
     }
-
 
     /* 4. Receive CertificateVerify */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_CERTIFICATE_VERIFY, signature, sig->length_signature, &body_len);
@@ -256,25 +248,10 @@ int main() {
     printf("[OK] Signature verified\n");
 
     /* Update transcript after receiving CertificateVerify */
-    if (encode_handshake_msg(TLS_MSG_CERTIFICATE_VERIFY, signature, signature_length, encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
-        fprintf(stderr, "[ERROR] Failed to encode CertificateVerify for transcript\n");
-        goto end;
-    }
-
-    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+    if (transcript_update_handshake_msg(&transcript, TLS_MSG_CERTIFICATE_VERIFY, signature, signature_length) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
         goto end;
     }
-
-
-    /* Decapsulation => shared_secret */
-    if (OQS_KEM_decaps(kem, shared_secret, ciphertext, kem_secret_key) != OQS_SUCCESS) {
-        fprintf(stderr, "[ERROR] OQS_KEM_decaps failed\n");
-        goto end;
-    }
-
-    printf("[OK] Decapsulation completed\n");
-
 
     /* 5. Receive Server Finished */
     received_bytes = recv_handshake_msg(sockfd, TLS_MSG_FINISHED, server_finished, sizeof(server_finished), &body_len);
@@ -312,15 +289,11 @@ int main() {
     printf("[OK] Server Finished verified\n");
 
     /* Update transcript after receiving Server Finished */
-    if (encode_handshake_msg(TLS_MSG_FINISHED, server_finished, sizeof(server_finished), encoded_msg, sizeof(encoded_msg), &encoded_len) != 0) {
-        fprintf(stderr, "[ERROR] Failed to encode Server Finished for transcript\n");
-        goto end;
-    }
-
-    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+    if (transcript_update_handshake_msg(&transcript, TLS_MSG_FINISHED, server_finished, sizeof(server_finished)) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
         goto end;
     }
+
 
     /* 6. Send Client Finished */
     /* Get hash value for transcript => to calculate MAC */
@@ -344,37 +317,55 @@ int main() {
     printf("[CLIENT] Sent Client Finished\n");
 
     /* Update transcript after sending Client Finished */
-    if (encode_handshake_msg(TLS_MSG_FINISHED, client_finished, sizeof(client_finished), encoded_msg, sizeof(encoded_msg), &encoded_len) != 0){
-        fprintf(stderr, "[ERROR] Failed to encode Client Finished for transcript\n");
-        goto end;
-    }
-
-    if (transcript_update(&transcript, encoded_msg, encoded_len) != 0) {
+    if (transcript_update_handshake_msg(&transcript, TLS_MSG_FINISHED, client_finished, sizeof(client_finished)) != 0) {
         fprintf(stderr, "[ERROR] Failed to update transcript\n");
         goto end;
     }
 
-
+    /* TLS APPLICATION DATA */
+    tls_record_state send_state;
+    tls_record_state recv_state;
+    uint8_t plaintext[1024];
+    size_t plaintext_len;
 
     /* Generate session key (AES Key) using HKDF_SHA256 */
-    uint8_t aes_key[32];
-    if (derive_aes256_key_hkdf(shared_secret, kem->length_shared_secret, aes_key, sizeof(aes_key)) != 0) {
-        fprintf(stderr, "HKDF_SHA256 failed\n");
+    if (transcript_get_hash(&transcript, transcript_hash, sizeof(transcript_hash), &transcript_hash_len) != 0) {
+        fprintf(stderr, "[ERROR] Failed to get final transcript hash\n");
         goto end;
     }
 
-    printf("AES Key: ");
-    print_hex(aes_key, sizeof(aes_key));
+    if (derive_application_keys(shared_secret, kem->length_shared_secret, transcript_hash, transcript_hash_len, &application_keys) != 0) {
+        fprintf(stderr, "[ERROR] Failed to derive application keys\n");
+        goto end;
+    }
 
+    printf("[CLIENT] Generated Application Keys\n");
 
-    /* 7. AES Encryption and Decryption Demo */
-    const char *message = "Hello Secure PQC!";
-    if (send_encrypted_record(sockfd, (const uint8_t *)message, strlen(message), aes_key) != 0) {
+    /* Init TLS RECORD State */
+    if (tls_record_state_init(&send_state, application_keys.client_key, application_keys.client_iv) != 0 || tls_record_state_init(&recv_state, application_keys.server_key, application_keys.server_iv) != 0) {
+        fprintf(stderr, "[ERROR] Failed to initialize record states\n");
+        goto end;
+    } 
+
+    /* 7. Send an application data record to Server */
+    const char *message = "Hello Secure PQC from Client!";
+    if (send_encrypted_record(sockfd, (const uint8_t *)message, strlen(message), &send_state) != 0) {
         fprintf(stderr, "[ERROR] Failed to send encrypted application record\n");
         goto end;
     }
 
     printf("[CLIENT] Sent Application Data record to Server\n");
+
+    /* 8. Received an application data record from Server */
+    if (recv_encrypted_record(sockfd, plaintext, sizeof(plaintext) - 1, &plaintext_len, &recv_state) != 0) {
+        fprintf(stderr, "[ERROR] Failed to receive encrypted application record\n");
+        goto end;
+    }  
+
+    plaintext[plaintext_len] = '\0';
+
+    printf("[Client] Received Application Data record from Server\n");
+    printf("[OK] Decrypted message: %s\n", plaintext);
 
     ret = EXIT_SUCCESS;
     printf("[CLIENT] Connection closed\n");
@@ -388,6 +379,8 @@ end:
     if (transcript_initialized) {
         transcript_free(&transcript);
     }
+
+    OPENSSL_cleanse(&application_keys, sizeof(application_keys));
     
     /* Free */
     cleanup_mlkem(kem_public_key, kem_secret_key, shared_secret, ciphertext, kem);
@@ -412,12 +405,7 @@ void cleanup_mlkem(uint8_t *kem_public_key, uint8_t *kem_secret_key, uint8_t *sh
 }
 
 void cleanup_mldsa(uint8_t *sig_public_key, uint8_t *signature, OQS_SIG *sig) {
-	if (sig != NULL) {
-        if (sig_public_key != NULL) {
-            OQS_MEM_secure_free(sig_public_key, sig->length_public_key);
-        }
-    }
-
+    OQS_MEM_insecure_free(sig_public_key);
     OQS_MEM_insecure_free(signature);
 	OQS_SIG_free(sig);
 }

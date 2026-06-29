@@ -7,6 +7,8 @@
 int aes_gcm_encrypt(
     const unsigned char *plaintext,
     int plaintext_len,
+    const unsigned char *aad,
+    int aad_len,
     const unsigned char *key,
     const unsigned char *iv,
     unsigned char *ciphertext,
@@ -17,7 +19,7 @@ int aes_gcm_encrypt(
     int ciphertext_len = 0;
 
     /* Validate input parameters */
-    if (!plaintext || !key || !iv || !ciphertext || !tag) {
+    if (plaintext == NULL || plaintext_len < 0 || aad_len < 0 || (aad_len > 0 && aad == NULL) || key == NULL || iv == NULL || ciphertext == NULL || tag == NULL) {
         return AES_ERROR;
     }
 
@@ -43,6 +45,14 @@ int aes_gcm_encrypt(
     if (EVP_EncryptInit_ex(ctx, NULL, NULL, key, iv) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
+    }
+
+    /* Add ADD => to calculate authentication tag */
+    if (aad_len > 0) {
+        if (EVP_EncryptUpdate(ctx, NULL, &len, aad, aad_len) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return AES_ERROR;
+        }
     }
 
     /* Encrypt plaintext. */
@@ -72,9 +82,12 @@ int aes_gcm_encrypt(
     return ciphertext_len;
 }
 
+/* Returns plaintext length (> 0) if success; -1 if error */
 int aes_gcm_decrypt(
     const unsigned char *ciphertext,
     int ciphertext_len,
+    const unsigned char *aad,
+    int aad_len,
     const unsigned char *tag,
     const unsigned char *key,
     const unsigned char *iv,
@@ -85,7 +98,8 @@ int aes_gcm_decrypt(
     int plaintext_len = 0;
     int ret;
 
-    if (!ciphertext || !tag || !key || !iv || !plaintext) {
+    /* Validate input parameters */
+    if (ciphertext == NULL || ciphertext_len < 0 || aad_len < 0 || (aad_len > 0 && aad == NULL) || key == NULL || iv == NULL || plaintext == NULL || tag == NULL) {
         return AES_ERROR;
     }
 
@@ -111,6 +125,14 @@ int aes_gcm_decrypt(
     if (EVP_DecryptInit_ex(ctx, NULL, NULL, key, iv) != 1) {
         EVP_CIPHER_CTX_free(ctx);
         return AES_ERROR;
+    }
+
+    /* Add ADD => to calculate authentication tag */
+    if (aad_len > 0) {
+        if (EVP_DecryptUpdate(ctx, NULL, &len, aad, aad_len) != 1) {
+            EVP_CIPHER_CTX_free(ctx);
+            return AES_ERROR;
+        }
     }
 
     /* Decrypt ciphertext */

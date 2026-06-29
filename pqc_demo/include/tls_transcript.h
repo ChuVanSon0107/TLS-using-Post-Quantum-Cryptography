@@ -23,4 +23,7 @@ int transcript_get_hash(tls_transcript *transcript, uint8_t *hash, size_t hash_c
 /* Free the OpenSSL digest context: void */
 void transcript_free(tls_transcript *transcript);
 
+/* Encode handshake message and update transcript with this encoded handshake message: 0 if success; -1 if error */
+int transcript_update_handshake_msg(tls_transcript *transcript, uint8_t msg_type, const uint8_t *body, size_t body_len);
+
 #endif

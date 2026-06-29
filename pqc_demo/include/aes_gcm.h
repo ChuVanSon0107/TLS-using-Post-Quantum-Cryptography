@@ -12,6 +12,8 @@
 int aes_gcm_encrypt(
     const unsigned char *plaintext,
     int plaintext_len,
+    const unsigned char *aad,
+    int aad_len,
     const unsigned char *key,
     const unsigned char *iv,
     unsigned char *ciphertext,
@@ -22,6 +24,8 @@ int aes_gcm_encrypt(
 int aes_gcm_decrypt(
     const unsigned char *ciphertext,
     int ciphertext_len,
+    const unsigned char *aad,
+    int aad_len,
     const unsigned char *tag,
     const unsigned char *key,
     const unsigned char *iv,

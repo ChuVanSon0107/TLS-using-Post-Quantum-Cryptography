@@ -1,6 +1,9 @@
 #include "tls_transcript.h"
 
+#include "tls_handshake.h"
+
 #include <string.h>
+#include <stdlib.h>
 
 int transcript_init(tls_transcript *transcript) {
     if (transcript == NULL) {
@@ -89,4 +92,41 @@ void transcript_free(tls_transcript *transcript) {
 
     EVP_MD_CTX_free(transcript->ctx);
     transcript->ctx = NULL;
+}
+
+int transcript_update_handshake_msg(tls_transcript *transcript, uint8_t msg_type, const uint8_t *body, size_t body_len) {
+    if (transcript == NULL) {
+        return -1;
+    }
+
+    if (body_len > 0 && body == NULL) {
+        return -1;
+    }
+
+    if (body_len > TLS_HANDSHAKE_MAX_BODY_LEN) {
+        return -1;
+    }
+    
+    size_t encoded_capacity = TLS_HANDSHAKE_HEADER_LEN + body_len;
+    uint8_t *encoded_msg = malloc(encoded_capacity);
+    size_t encoded_len;
+
+    if (encoded_msg == NULL) {
+        return -1;
+    }
+    
+    /* Encode handshake message */
+    if (encode_handshake_msg(msg_type, body, body_len, encoded_msg, encoded_capacity, &encoded_len) != 0) {
+        free(encoded_msg);
+        return -1;
+    }
+
+    /* Update transcript with encoded handshake message */
+    if (transcript_update(transcript, encoded_msg, encoded_len) != 0) {
+        free(encoded_msg);
+        return -1;
+    }
+
+    free(encoded_msg);
+    return 0;
 }

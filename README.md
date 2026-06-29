@@ -23,11 +23,11 @@ Client                                              Server
   |<-- ServerHello: ML-KEM ciphertext -----------------|
   |<-- Certificate: raw ML-DSA public key -------------|
   |<-- CertificateVerify: signature(transcript hash) --|
-  |<-- Finished: HMAC(transcript hash) -----------------|
-  |-- Finished: HMAC(transcript hash) ----------------->|
+  |<-- Finished: HMAC(transcript hash) ----------------|
+  |-- Finished: HMAC(transcript hash) ---------------->|
   |                                                    |
   |-- AES-256-GCM application record ----------------->|
-  |              "Hello Secure PQC!"                  |
+  |              "Hello Secure PQC!"                   |
 ```
 
 Client tạo cặp khóa ML-KEM tạm thời và gửi public key. Server encapsulate để tạo ciphertext cùng shared secret; client decapsulate ciphertext để thu được cùng shared secret. Hai phía kiểm tra transcript bắt tay và Finished message trước khi dẫn xuất cùng một khóa AES.
