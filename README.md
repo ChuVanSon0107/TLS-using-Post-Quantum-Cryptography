@@ -1,65 +1,83 @@
 # PQC TLS Demo
 
-`pqc_demo` minh họa một kênh liên lạc client–server lấy cảm hứng từ TLS, sử dụng các thuật toán hậu lượng tử của [liboqs](https://github.com/open-quantum-safe/liboqs) và các primitive đối xứng của OpenSSL.
+`pqc_demo` is an educational client-server secure channel inspired by TLS. It combines post-quantum key exchange and authentication from [liboqs](https://github.com/open-quantum-safe/liboqs) with symmetric primitives from OpenSSL.
 
-> **Lưu ý:** đây là dự án học tập, không phải một triển khai TLS/HTTPS tương thích tiêu chuẩn và không nên dùng để bảo vệ dữ liệu thật.
+This is not a standards-compliant TLS/HTTPS implementation. Do not use it to protect real data.
 
-## Tính năng chính
+## Features
 
-- Trao đổi bí mật bằng **ML-KEM-768**.
-- Xác thực transcript bắt tay bằng chữ ký **ML-DSA-65**.
-- Theo dõi transcript bằng **SHA-256**.
-- Xác nhận hai phía bằng Finished message, **HKDF-SHA256** và **HMAC-SHA256**.
-- Dẫn xuất khóa phiên 256 bit bằng **HKDF-SHA256**.
-- Mã hóa application data bằng **AES-256-GCM**.
-- Truyền dữ liệu qua TCP trên `127.0.0.1:8080`.
+- Post-quantum key exchange with **ML-KEM-768**.
+- Server authentication with **ML-DSA-65**.
+- A raw ML-DSA public key carried in a demo `Certificate` message.
+- Handshake transcript tracking with **SHA-256**.
+- Server and client `Finished` verification with **HKDF-SHA256** and **HMAC-SHA256**.
+- Application key schedule that derives separate client/server AES keys and IVs.
+- Encrypted application records with **AES-256-GCM**.
+- AES-GCM nonce derived from a per-direction static IV and record sequence number.
+- Record header authentication through AES-GCM AAD.
+- Local TCP transport on `127.0.0.1:8080`.
 
-## Luồng hoạt động
-
-```text
-Client                                              Server
-  |                                                    |
-  |-- ClientHello: ML-KEM public key ----------------->|
-  |<-- ServerHello: ML-KEM ciphertext -----------------|
-  |<-- Certificate: raw ML-DSA public key -------------|
-  |<-- CertificateVerify: signature(transcript hash) --|
-  |<-- Finished: HMAC(transcript hash) ----------------|
-  |-- Finished: HMAC(transcript hash) ---------------->|
-  |                                                    |
-  |-- AES-256-GCM application record ----------------->|
-  |              "Hello Secure PQC!"                   |
-```
-
-Client tạo cặp khóa ML-KEM tạm thời và gửi public key. Server encapsulate để tạo ciphertext cùng shared secret; client decapsulate ciphertext để thu được cùng shared secret. Hai phía kiểm tra transcript bắt tay và Finished message trước khi dẫn xuất cùng một khóa AES.
-
-Handshake message có header 4 byte:
+## Protocol Flow
 
 ```text
-message_type (1 byte) | body_length (3 byte) | body
+Client                                                   Server
+  |                                                        |
+  |-- ClientHello: ML-KEM public key --------------------->|
+  |<-- ServerHello: ML-KEM ciphertext ---------------------|
+  |<-- Certificate: raw ML-DSA public key -----------------|
+  |<-- CertificateVerify: signature(transcript hash) ------|
+  |<-- Finished: HMAC(transcript hash) --------------------|
+  |-- Finished: HMAC(transcript hash) -------------------->|
+  |                                                        |
+  |-- AES-256-GCM application record --------------------->|
+  |<-- AES-256-GCM application record ---------------------|
 ```
 
-Application record có định dạng thử nghiệm:
+The client generates an ephemeral ML-KEM key pair and sends the public key in `ClientHello`. The server encapsulates to that key, sends the ML-KEM ciphertext in `ServerHello`, and both sides arrive at the same shared secret.
+
+The server then sends a raw ML-DSA public key in `Certificate` and signs the current transcript hash in `CertificateVerify`. Both sides verify `Finished` messages before deriving application traffic keys.
+
+## Message Formats
+
+Handshake messages use a compact 4-byte header:
 
 ```text
-content_type (1) | version (2) | length (2) | IV (12) | tag (16) | ciphertext
+message_type (1 byte) | body_length (3 bytes) | body
 ```
 
-## Yêu cầu hệ thống
+Application records use this demo format:
 
-- Linux hoặc môi trường POSIX có TCP socket.
-- Trình biên dịch C hỗ trợ C11 (GCC hoặc Clang).
-- `make`, `pkg-config` và CMake (nếu tự build liboqs).
-- OpenSSL **3.x** và header phát triển.
-- liboqs có bật `ML-KEM-768` và `ML-DSA-65`.
+```text
+content_type (1 byte) | version (2 bytes) | length (2 bytes) | ciphertext | tag (16 bytes)
+```
 
-Ví dụ cài các công cụ nền trên Ubuntu/Debian:
+The record header is used as AES-GCM AAD. The IV is not sent on the wire. Each side derives a static IV from the key schedule, then computes the per-record nonce as:
+
+```text
+nonce = static_iv XOR sequence_number
+```
+
+Each traffic direction has its own key, IV, and sequence number:
+
+- client-to-server: `client_key`, `client_iv`
+- server-to-client: `server_key`, `server_iv`
+
+## Requirements
+
+- Linux or another POSIX-like environment with TCP sockets.
+- GCC or Clang.
+- `make` and `pkg-config`.
+- OpenSSL 3.x development headers and libraries.
+- liboqs built with ML-KEM-768 and ML-DSA-65 support.
+
+On Ubuntu/Debian, the base packages are typically:
 
 ```bash
 sudo apt update
 sudo apt install build-essential cmake ninja-build pkg-config libssl-dev
 ```
 
-Nếu repository có thư mục `liboqs/` ở cấp bên cạnh `pqc_demo/`, có thể build và cài thư viện như sau:
+If you build liboqs from source:
 
 ```bash
 cmake -S liboqs -B liboqs/build \
@@ -71,13 +89,13 @@ sudo cmake --install liboqs/build
 sudo ldconfig
 ```
 
-Kiểm tra dependency đã được tìm thấy:
+Check that the dependencies are visible:
 
 ```bash
 pkg-config --modversion liboqs openssl
 ```
 
-Nếu `pkg-config` không tìm thấy liboqs được cài vào `/usr/local`, thử:
+If liboqs was installed under `/usr/local` and `pkg-config` cannot find it:
 
 ```bash
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
@@ -86,71 +104,73 @@ export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
 ## Build
 
-Các lệnh dưới đây được chạy từ thư mục `pqc_demo`:
+Run the build from the `pqc_demo` directory:
 
 ```bash
 cd pqc_demo
 make
 ```
 
-Hai chương trình chính được tạo tại:
+This creates:
 
 ```text
 build/secure_server
 build/secure_client
 ```
 
-Build lại từ đầu:
+To rebuild from scratch:
 
 ```bash
 make clean
 make
 ```
 
-Có thể thay compiler hoặc cờ biên dịch:
+You can also override the compiler:
 
 ```bash
 make CC=clang CFLAGS="-Wall -Wextra -O2"
 ```
 
-## Chạy demo đầy đủ
+## Run
 
-Chương trình sử dụng đường dẫn tương đối tới thư mục `keys/`, vì vậy hãy chạy cả hai terminal từ `pqc_demo`.
+The programs use relative paths to the `keys/` directory, so run both commands from `pqc_demo`.
 
-Terminal 1 — khởi động server:
+Terminal 1:
 
 ```bash
 cd pqc_demo
 ./build/secure_server
 ```
 
-Terminal 2 — khởi động client:
+Terminal 2:
 
 ```bash
 cd pqc_demo
 ./build/secure_client
 ```
 
-Khi thành công, hai phía in ra cùng một AES key; server xác minh Client Finished và giải mã được:
+On success, both peers complete the post-quantum handshake, derive application keys, exchange encrypted application data, and print decrypted messages such as:
 
 ```text
-[OK] Decrypted message: Hello Secure PQC!
+[OK] Decrypted message: Hello Secure PQC from Client!
+[OK] Decrypted message: Hello Secure PQC from Server!
 ```
 
-Server xử lý một client rồi thoát. Muốn chạy lại, hãy khởi động server trước rồi chạy client.
+The server handles one client connection and then exits. Start the server again before rerunning the client.
 
-## Khóa ML-DSA của server
+## Server ML-DSA Keys
 
-Repository hiện có sẵn hai file khóa nhị phân:
+The demo expects these binary key files:
 
 ```text
 keys/server_mldsa_public.key
 keys/server_mldsa_secret.key
 ```
 
-Để tạo cặp khóa mới:
+To generate a new pair:
 
 ```bash
+cd pqc_demo
 mkdir -p build
 cc -Wall -Wextra -O2 \
   $(pkg-config --cflags liboqs) \
@@ -163,11 +183,37 @@ cd tools
 cd ..
 ```
 
-Lệnh tạo khóa dùng đường dẫn tương đối `../keys`, nên bước chạy từ thư mục `tools/` là bắt buộc. Không công khai hoặc commit secret key mới nếu repository được chia sẻ.
+The key generator writes to `../keys`, so it must be run from `pqc_demo/tools`. Do not publish or commit newly generated secret keys in a shared repository.
 
-## Các demo thành phần
+## Project Layout
 
-`Makefile` mặc định chỉ build secure client/server. Có thể build riêng các ví dụ thuật toán như sau (từ `pqc_demo`):
+```text
+pqc_demo/
+├── Makefile                 # Builds secure client and server
+├── demo/                    # Standalone ML-KEM, ML-DSA, AES-GCM, and HKDF demos
+├── include/                 # Public headers
+├── keys/                    # Demo ML-DSA server key pair
+├── network/                 # TCP demos and secure client/server
+├── src/                     # Handshake, transcript, Finished, record, and crypto code
+└── tools/                   # ML-DSA key generation tool
+```
+
+Main modules:
+
+| Module | Purpose |
+|---|---|
+| `tls_handshake` | Encodes, sends, and receives handshake messages |
+| `tls_transcript` | Hashes handshake messages with SHA-256 |
+| `tls_finished` | Computes Finished verify data with HKDF/HMAC |
+| `tls_key_schedule` | Derives client/server application keys and IVs |
+| `aes_gcm` | AES-256-GCM encryption/decryption with optional AAD |
+| `tls_record` | Demo encrypted record layer with sequence-based nonces |
+| `sig_utils` | Loads ML-DSA keys from files |
+| `common` | Reliable send/receive helpers and hex printing |
+
+## Standalone Demos
+
+The default `Makefile` builds only the secure client and server. You can compile individual demos from `pqc_demo`:
 
 ```bash
 mkdir -p build
@@ -181,62 +227,40 @@ cc -Wall -Wextra -O2 demo/sig_demo.c \
   $(pkg-config --cflags --libs liboqs openssl)
 
 cc -Wall -Wextra -O2 demo/aes_demo.c \
-  -o build/aes_demo $(pkg-config --cflags --libs openssl)
+  -o build/aes_demo \
+  $(pkg-config --cflags --libs openssl)
+
+cc -Wall -Wextra -O2 demo/hkdf_demo.c \
+  -o build/hkdf_demo \
+  $(pkg-config --cflags --libs openssl)
 ```
 
-Chạy:
+Run them with:
 
 ```bash
 ./build/kem_demo
 ./build/sig_demo
 ./build/aes_demo
+./build/hkdf_demo
 ```
 
-Các cặp `network/server.c` + `network/client.c` và `network/kem_server.c` + `network/kem_client.c` là những bước thử nghiệm đơn giản hơn dẫn tới secure demo hoàn chỉnh.
-
-## Cấu trúc thư mục
-
-```text
-pqc_demo/
-├── Makefile                 # Build secure client và server
-├── demo/                    # Demo độc lập: ML-KEM, ML-DSA, AES-GCM, HKDF
-├── include/                 # Public header của các module
-├── keys/                    # Cặp khóa ML-DSA nhị phân của server
-├── network/                 # TCP, KEM và secure client/server
-├── src/                     # Handshake, transcript, Finished, record và crypto
-└── tools/                   # Công cụ tạo cặp khóa ML-DSA
-```
-
-Các module chính:
-
-| Module | Vai trò |
-|---|---|
-| `tls_handshake` | Encode, gửi và nhận handshake message |
-| `tls_transcript` | Băm liên tục các handshake message bằng SHA-256 |
-| `tls_finished` | Dẫn xuất Finished key và tính HMAC xác nhận transcript |
-| `kdf` | Dẫn xuất khóa phiên bằng HKDF-SHA256 |
-| `aes_gcm` | Mã hóa và xác thực bằng AES-256-GCM |
-| `tls_record` | Đóng gói và giải mã application record thử nghiệm |
-| `sig_utils` | Đọc khóa ML-DSA từ file |
-| `common` | Gửi/nhận đủ số byte và in dữ liệu hexadecimal |
-
-## Xử lý lỗi thường gặp
+## Troubleshooting
 
 ### `Package liboqs was not found`
 
-Đảm bảo liboqs đã được cài và `PKG_CONFIG_PATH` chứa thư mục có `liboqs.pc`. Dùng lệnh sau để kiểm tra:
+Make sure liboqs is installed and that `PKG_CONFIG_PATH` includes the directory containing `liboqs.pc`.
 
 ```bash
 pkg-config --cflags --libs liboqs
 ```
 
-### Lỗi khi nạp shared library
+### Shared library load errors
 
-Nếu chương trình báo không tìm thấy `liboqs.so`, chạy `sudo ldconfig` sau khi cài hoặc thêm `/usr/local/lib` vào `LD_LIBRARY_PATH`.
+If the program cannot find `liboqs.so`, run `sudo ldconfig` after installing liboqs, or add `/usr/local/lib` to `LD_LIBRARY_PATH`.
 
 ### `fopen: No such file or directory`
 
-Secure client/server phải được chạy từ thư mục `pqc_demo`, nơi có thư mục `keys/`. Kiểm tra:
+Run `secure_server` and `secure_client` from `pqc_demo`, where the `keys/` directory is located.
 
 ```bash
 ls -l keys/server_mldsa_*.key
@@ -244,22 +268,24 @@ ls -l keys/server_mldsa_*.key
 
 ### `bind: Address already in use`
 
-Một tiến trình khác đang dùng cổng `8080`. Dừng tiến trình/server cũ rồi chạy lại.
+Another process is using port `8080`. Stop the old server or change the port in both client and server.
 
 ### `connect: Connection refused`
 
-Khởi động `secure_server` trước `secure_client` và kiểm tra cả hai đang dùng `127.0.0.1:8080`.
+Start `secure_server` before `secure_client` and confirm that both use `127.0.0.1:8080`.
 
-## Giới hạn bảo mật
+## Security Limitations
 
-Dự án chỉ mô phỏng một phần ý tưởng của TLS:
+This project intentionally implements only a small learning-oriented subset of TLS ideas:
 
-- Không dùng state machine, wire format hoặc key schedule chuẩn TLS 1.3.
-- “Certificate” chỉ chứa raw ML-DSA public key; không có X.509, CA, hostname verification hoặc trust store.
-- Client nhận public key xác thực ngay trong cùng kết nối và chưa pin khóa, vì vậy chưa chống được kẻ trung gian chủ động.
-- Record chưa có sequence number, nonce derivation, AAD, chống replay, key update hoặc alert protocol như TLS thật.
-- AES key được in ra terminal để quan sát demo; phần mềm thực tế không được log key bí mật.
-- Secret key mẫu nằm trong repository và chỉ phù hợp cho thử nghiệm cục bộ.
-- Server hiện chỉ phục vụ một kết nối và client/server dùng địa chỉ, cổng, thông điệp cố định trong mã nguồn.
+- It is not wire-compatible with TLS 1.3.
+- It does not implement the TLS 1.3 state machine, alerts, extensions, cipher suite negotiation, or key update.
+- The `Certificate` message carries a raw ML-DSA public key, not an X.509 certificate chain.
+- There is no CA validation, hostname verification, trust store, or robust public-key pinning model.
+- `CertificateVerify` currently signs the transcript hash directly instead of the exact TLS 1.3 domain-separated structure.
+- The key schedule is demo-specific and not the TLS 1.3 key schedule.
+- Replay protection, rekeying, fragmentation policy, and traffic limits are minimal.
+- The sample server key is included for local testing only.
+- The server handles one connection and uses fixed address, port, algorithms, and demo messages.
 
-Để xây dựng ứng dụng thực tế, hãy dùng một thư viện TLS đã được kiểm định và cấu hình hỗ trợ thuật toán hậu lượng tử phù hợp thay vì mở rộng trực tiếp protocol demo này.
+For real applications, use a reviewed TLS library with appropriate post-quantum support instead of extending this demo protocol directly.
