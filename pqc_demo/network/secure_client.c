@@ -9,7 +9,6 @@
 
 #include "common.h"
 #include "aes_gcm.h"
-#include "kdf.h"
 #include "sig_utils.h"
 #include "tls_handshake.h"
 #include "tls_transcript.h"
